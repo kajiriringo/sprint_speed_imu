@@ -31,6 +31,8 @@ class RunConfig:
     kalman_process_noise: float = 0.05
     kalman_measurement_noise: float = 0.5
     course_yaw_deg: float = 0.0
+    heading_source: str = "auto"
+    heading_offset_deg: float = 0.0
     euler_order: str = "xyz"
     gravity: float = 9.80665
     gravity_mode: str = "auto"

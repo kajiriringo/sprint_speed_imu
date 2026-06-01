@@ -63,3 +63,55 @@ def plot_speed_curve(curve: pd.DataFrame, summary: dict[str, object], output_pat
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=160)
     plt.close(fig)
+
+
+def plot_trajectory(trajectory: pd.DataFrame, summary: dict[str, object], output_path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(7, 7))
+    ax.plot(
+        trajectory["estimated_east_m"],
+        trajectory["estimated_north_m"],
+        color="#2ca02c",
+        linewidth=2.0,
+    )
+    ax.scatter(
+        [trajectory["estimated_east_m"].iloc[0]],
+        [trajectory["estimated_north_m"].iloc[0]],
+        color="#1f77b4",
+        label="start",
+        zorder=3,
+    )
+    ax.scatter(
+        [trajectory["estimated_east_m"].iloc[-1]],
+        [trajectory["estimated_north_m"].iloc[-1]],
+        color="#d62728",
+        label="end",
+        zorder=3,
+    )
+    ax.set_title("Estimated Heading Trajectory")
+    ax.set_xlabel("Estimated east displacement (m)")
+    ax.set_ylabel("Estimated north displacement (m)")
+    ax.axis("equal")
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="best")
+
+    run = summary["run"]
+    confidence = summary["confidence"]
+    note = (
+        f"Method: {run.get('method')}  Heading: {run.get('heading_source')}  "
+        f"Confidence: {confidence.get('overall')}\n"
+        "Acceleration-integrated path. No stride or manual distance."
+    )
+    ax.text(
+        0.01,
+        0.02,
+        note,
+        transform=ax.transAxes,
+        fontsize=9,
+        va="bottom",
+        ha="left",
+        bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "alpha": 0.85, "edgecolor": "#cccccc"},
+    )
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)

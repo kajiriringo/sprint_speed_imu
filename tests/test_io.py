@@ -56,6 +56,9 @@ def test_io_wt901ble_tsv_with_units_and_iso_time(tmp_path):
             f"AngleX({degree})": [88.30, 88.29],
             f"AngleY({degree})": [-0.26, -0.26],
             f"AngleZ({degree})": [29.78, 29.78],
+            "HX(uT)": [21.7, 21.8],
+            "HY(uT)": [-43.7, -43.8],
+            "HZ(uT)": [-46.453, -46.500],
             "Q0()": [0.69696, 0.69699],
             "Q1()": [0.66940, 0.66940],
             "Q2()": [0.17719, 0.17715],
@@ -74,10 +77,12 @@ def test_io_wt901ble_tsv_with_units_and_iso_time(tmp_path):
 
     assert meta["rows"] == 2
     assert {"time_s", "ax", "ay", "az", "gx", "gy", "gz"}.issubset(df.columns)
+    assert {"hx", "hy", "hz"}.issubset(df.columns)
     assert {"roll", "pitch", "yaw", "qw", "qx", "qy", "qz"}.issubset(df.columns)
     assert df["time_s"].tolist() == pytest.approx([0.0, 0.060])
     assert df["ax"].iloc[0] == pytest.approx(0.002 * 9.80665)
     assert df["gy"].iloc[0] == pytest.approx(math.radians(0.183))
+    assert df["hx"].iloc[0] == pytest.approx(21.7)
     assert df["roll"].iloc[0] == pytest.approx(88.30)
     assert df["qw"].iloc[0] == pytest.approx(0.69696)
     assert warnings == ["time_s was generated from datetime timestamps in the time column."]

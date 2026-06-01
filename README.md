@@ -12,8 +12,10 @@ WT9011DCL または類似 IMU の CSV ログから、陸上短距離走の推定
 - WT9011DCL / 類似 IMU の CSV ログを読み込み
 - PCA 方式による走行方向推定
 - 姿勢角 / クォータニオンを使った attitude 方式
+- 方位角 / 磁気センサーを使った heading 方式
 - 既知距離による manual 距離アンカー
 - IMU 積分のみの auto 距離推定
+- heading 方式では推定 2D 軌跡を出力
 - Savitzky-Golay、Butterworth、Kalman / RTS smoother による平滑化
 - `summary.json` への QC、confidence、warning、実行条件の出力
 - `compare` による PCA / attitude の比較
@@ -101,7 +103,8 @@ out/test_pca/
 3. 可能なら `--duration-s` または `--end-mode manual --end-time` を指定する
 4. まず `--method pca` で解析する
 5. 姿勢角またはクォータニオンが信頼できる場合だけ `--method attitude` と比較する
-6. `summary.json` の `warnings`, `confidence`, `qc` を確認する
+6. 距離不明・非直線の腰装着ログでは `--method heading --distance-source auto` を参考解析として使う
+7. `summary.json` の `warnings`, `confidence`, `qc` を確認する
 
 最良:
 
@@ -144,7 +147,7 @@ sprint-speed-imu compare \
 標準列:
 
 ```csv
-time_s,ax,ay,az,gx,gy,gz,roll,pitch,yaw,qw,qx,qy,qz
+time_s,ax,ay,az,gx,gy,gz,roll,pitch,yaw,qw,qx,qy,qz,hx,hy,hz
 ```
 
 ### 必須列
@@ -153,6 +156,7 @@ time_s,ax,ay,az,gx,gy,gz,roll,pitch,yaw,qw,qx,qy,qz
 |---|---|
 | `pca` | `time_s`, `ax`, `ay`, `az` |
 | `attitude` | `time_s`, `ax`, `ay`, `az` と `roll,pitch,yaw` または `qw,qx,qy,qz` |
+| `heading` | `time_s`, `ax`, `ay`, `az` と `yaw`、`qw,qx,qy,qz`、または `hx,hy,hz` |
 
 `time_s` が無い場合は `--sample-rate-hz` から時刻列を生成できます。
 カンマ区切り CSV とタブ区切り TSV は自動判定されます。
@@ -197,7 +201,10 @@ WT901BLE 形式の `AccX(g)`, `AsX(°/s)`, `AngleX(°)`, `Q0()` などの単位�
   "gz": "GyroZ",
   "roll": "AngleX",
   "pitch": "AngleY",
-  "yaw": "AngleZ"
+  "yaw": "AngleZ",
+  "hx": "HX",
+  "hy": "HY",
+  "hz": "HZ"
 }
 ```
 
@@ -250,6 +257,37 @@ sprint-speed-imu \
 --euler-order xyz
 ```
 
+### `--method heading`
+
+`yaw`、クォータニオンから得たセンサー前方軸、または `hx,hy,hz` の磁気センサーから時々刻々の方位を推定し、重力除去後の水平加速度をその方位へ射影します。
+
+推奨条件:
+
+- 腰、仙骨、背中下部に固定されている
+- 距離が分からず、かつ直線とは限らない移動を参考解析したい
+- `AngleZ` またはクォータニオンが概ね安定している
+- 磁気センサー周辺に強い磁気ノイズ源が少ない
+
+実行例:
+
+```bash
+sprint-speed-imu \
+  --input data/waist_walk.tsv \
+  --method heading \
+  --distance-source auto \
+  --smoothing-method kalman \
+  --output-dir out/waist_heading
+```
+
+関連オプション:
+
+```bash
+--heading-source auto          # auto, yaw, quaternion, magnetometer
+--heading-offset-deg 0         # センサー前方と実際の腰向きの補正角
+```
+
+`heading` は歩幅や manual 距離を使いません。そのため、進行方向の追従には有用ですが、速度と距離は加速度積分のドリフトを含む低信頼の推定値です。
+
 ## 距離モード
 
 ### `--distance-source manual`
@@ -270,7 +308,8 @@ IMU 積分のみで距離を推定します。これは低信頼・実験用で�
 --distance-source auto
 ```
 
-`auto` の結果はドリフトの影響を大きく受けます。実用上は `manual` を使ってください。
+`auto` の結果はドリフトの影響を大きく受けます。`pca` / `attitude` の速度評価では `manual` を使ってください。
+距離不明の `heading` 解析では、低信頼の参考値として扱ってください。
 
 ## 速度補正モード
 
@@ -315,7 +354,7 @@ sprint-speed-imu \
 通常解析:
 
 ```bash
-sprint-speed-imu [run] --input INPUT --output-dir OUTPUT_DIR --method {pca,attitude} --distance-source {manual,auto}
+sprint-speed-imu [run] --input INPUT --output-dir OUTPUT_DIR --method {pca,attitude,heading} --distance-source {manual,auto}
 ```
 
 主要オプション:
@@ -324,7 +363,7 @@ sprint-speed-imu [run] --input INPUT --output-dir OUTPUT_DIR --method {pca,attit
 |---|---|
 | `--input` | 入力 CSV |
 | `--output-dir` | 出力ディレクトリ |
-| `--method` | `pca` または `attitude` |
+| `--method` | `pca`, `attitude`, `heading` |
 | `--distance-source` | `manual` または `auto` |
 | `--distance-m` | manual 距離 `m` |
 | `--start-mode` | `auto` または `manual` |
@@ -335,6 +374,8 @@ sprint-speed-imu [run] --input INPUT --output-dir OUTPUT_DIR --method {pca,attit
 | `--distance-bin-m` | speed_curve.csv の距離刻み |
 | `--smooth` | `true` または `false` |
 | `--smoothing-method` | `savgol`, `butter`, `kalman`, `none` |
+| `--heading-source` | `auto`, `yaw`, `quaternion`, `magnetometer` |
+| `--heading-offset-deg` | heading 方式の方位補正角 |
 | `--pca-window` | `run`, `first-2s`, `first-half` |
 | `--strict` | warning がある場合に失敗 |
 | `--overwrite` | 出力先を上書き |
@@ -371,6 +412,8 @@ sprint-speed-imu synthetic \
 | `run_config.json` | 実行時設定 |
 | `warnings.txt` | warning の一覧 |
 | `debug_intermediate.csv` | `--debug` 指定時の中間信号 |
+| `trajectory.csv` | `heading` 方式時の推定 2D 軌跡 |
+| `trajectory.png` | `heading` 方式時の推定 2D 軌跡グラフ |
 
 ### `speed_curve.csv`
 
@@ -397,6 +440,9 @@ sprint-speed-imu synthetic \
 | `warnings` | 注意事項 |
 | `qc.pca_explained_variance_ratio` | PCA 方向推定の寄与率 |
 | `qc.yaw_std_deg` | yaw の安定性 |
+| `qc.heading_source` | heading 方式で使った方位ソース |
+| `qc.heading_lateral_energy_ratio` | 方位方向に対する横方向加速度エネルギー比 |
+| `qc.magnetic_norm_cv` | 磁気センサー強度の変動係数 |
 | `qc.manual_distance_correction_ratio` | 距離補正比 |
 | `qc.acceleration_saturation_warning` | 加速度飽和疑い |
 | `velocity_diagnostics.forward_accel_peak_retention_ratio` | 平滑化後の加速度ピーク保持率 |
@@ -415,11 +461,13 @@ sprint-speed-imu synthetic \
 
 精度と再現性のため、以下を守ってください。
 
-- 直線走で使う
+- `pca` / `attitude` は直線走で使う
+- 距離不明・非直線の腰装着ログは `heading` を参考解析として使う
 - センサーを腰、仙骨、背中下部に固定する
 - ポケット、緩いポーチ、揺れる固定具は避ける
 - 初期運用ではシューズ装着を避ける
 - 既知距離を入力する
+- 既知距離を使わない `heading` / `auto` では絶対速度を過信しない
 - 可能なら走行時間、終了時刻、またはトリム済み CSV を使う
 - `summary.json` の warning を確認する
 - 異なる選手、装着位置、センサー設定を直接比較しない
@@ -428,8 +476,10 @@ sprint-speed-imu synthetic \
 
 - BLE リアルタイム取得は非対応
 - 公式タイムや公認速度の算出は非対応
-- カーブ走、急な方向転換、多人数ログは想定外
+- `pca` / `attitude` のカーブ走、急な方向転換、多人数ログは想定外
 - IMU 単体の auto 距離推定は低信頼
+- heading 方式でも加速度積分ドリフトにより絶対速度と距離は低信頼
+- 磁気センサーは屋内の金属、電子機器、センサー校正の影響を受ける
 - 靴装着では加速度飽和の可能性が高い
 - センサー座標系や Euler 順序は機種・設定に依存するため実データで確認が必要
 
@@ -441,6 +491,7 @@ sprint-speed-imu synthetic \
 | 速度曲線が暴れる | 固定不良、ノイズ、方向推定失敗 | 固定を見直し、`--smoothing-method kalman` や `pca-window` を試す |
 | PCA confidence が低い | 主方向が明確でない | `--pca-window first-2s`、固定位置、CSV 範囲を確認 |
 | attitude が失敗する | 姿勢列が無効、Euler 順序不一致 | `--method pca` を使う、`--euler-order` を確認 |
+| heading の軌跡が曲がりすぎる | yaw 不安定、磁気外乱、センサー前方ズレ | `--heading-source`, `--heading-offset-deg`, 固定位置を確認 |
 | auto 距離が変 | IMU 積分ドリフト | `--distance-source manual` を使う |
 | strict で失敗する | warning が出ている | `warnings.txt` と `summary.json` を確認 |
 

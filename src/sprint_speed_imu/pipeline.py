@@ -17,7 +17,7 @@ from .qc import add_qc_warnings, build_qc, confidence_labels
 from .report import ASSUMPTIONS, ensure_output_dir, write_artifacts
 from .schema import validate_required_columns
 from .start_detect import detect_start_time
-from .velocity import estimate_velocity
+from .velocity import cumulative_trapezoid, estimate_velocity
 
 ESTIMATED_WARNING = "Speed, distance, and max-speed location are estimated from IMU data."
 
@@ -82,6 +82,11 @@ def run_analysis(config: RunConfig) -> dict[str, Any]:
         distance_bin_m=config.distance_bin_m,
         confidence_flag=confidence["overall"],
     )
+    trajectory = (
+        _build_trajectory_dataframe(time, direction.heading_deg, velocity, confidence["overall"])
+        if direction.heading_deg is not None
+        else None
+    )
 
     max_idx = int(np.nanargmax(velocity.estimated_speed_mps))
     final_distance = float(velocity.estimated_distance_m[-1])
@@ -110,6 +115,8 @@ def run_analysis(config: RunConfig) -> dict[str, Any]:
             "kalman_measurement_noise": config.kalman_measurement_noise
             if config.smoothing_method == "kalman"
             else None,
+            "heading_source": config.heading_source if config.method == "heading" else None,
+            "heading_offset_deg": config.heading_offset_deg if config.method == "heading" else None,
         },
         "results": {
             "average_speed_mps": average_speed,
@@ -127,13 +134,13 @@ def run_analysis(config: RunConfig) -> dict[str, Any]:
     }
 
     debug_df = _build_debug_dataframe(run_df, direction, velocity) if config.debug else None
-    write_artifacts(config, curve, debug_df, summary, warnings)
+    write_artifacts(config, curve, debug_df, summary, warnings, trajectory)
     return summary
 
 
 def _validate_config(config: RunConfig) -> None:
-    if config.method not in {"pca", "attitude"}:
-        raise InvalidOptionError("--method must be attitude or pca.")
+    if config.method not in {"pca", "attitude", "heading"}:
+        raise InvalidOptionError("--method must be attitude, heading, or pca.")
     if config.distance_source == "manual" and config.distance_m is None:
         raise InvalidOptionError("--distance-m is required when --distance-source=manual.")
     if config.distance_source == "manual" and config.distance_m is not None and config.distance_m <= 0:
@@ -150,6 +157,8 @@ def _validate_config(config: RunConfig) -> None:
         raise InvalidOptionError("--kalman-process-noise must be positive.")
     if config.kalman_measurement_noise <= 0:
         raise InvalidOptionError("--kalman-measurement-noise must be positive.")
+    if config.heading_source not in {"auto", "yaw", "quaternion", "magnetometer"}:
+        raise InvalidOptionError("--heading-source must be auto, yaw, quaternion, or magnetometer.")
 
 
 def _resolve_end_time(df: pd.DataFrame, config: RunConfig, start_time: float) -> float:
@@ -193,6 +202,32 @@ def _build_debug_dataframe(run_df, direction, velocity) -> pd.DataFrame:
             "estimated_distance_m": velocity.estimated_distance_m,
             "method_specific_1": direction.method_specific_1,
             "method_specific_2": direction.method_specific_2,
+            "heading_deg": direction.heading_deg
+            if direction.heading_deg is not None
+            else np.full(len(run_df), np.nan),
+        }
+    )
+
+
+def _build_trajectory_dataframe(
+    time_s: np.ndarray,
+    heading_deg: np.ndarray,
+    velocity,
+    confidence_flag: str,
+) -> pd.DataFrame:
+    heading_rad = np.deg2rad(np.asarray(heading_deg, dtype=float))
+    east_velocity = velocity.estimated_speed_mps * np.cos(heading_rad)
+    north_velocity = velocity.estimated_speed_mps * np.sin(heading_rad)
+    east_m = cumulative_trapezoid(east_velocity, time_s)
+    north_m = cumulative_trapezoid(north_velocity, time_s)
+    return pd.DataFrame(
+        {
+            "time_s": time_s,
+            "heading_deg": heading_deg,
+            "estimated_speed_mps": velocity.estimated_speed_mps,
+            "estimated_east_m": east_m,
+            "estimated_north_m": north_m,
+            "confidence_flag": confidence_flag,
         }
     )
 

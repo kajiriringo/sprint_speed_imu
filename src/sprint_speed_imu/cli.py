@@ -137,7 +137,7 @@ def _add_analysis_options(parser: argparse.ArgumentParser, include_method: bool)
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     if include_method:
-        parser.add_argument("--method", choices=["attitude", "pca"], required=True)
+        parser.add_argument("--method", choices=["attitude", "heading", "pca"], required=True)
     parser.add_argument("--distance-source", choices=["manual", "auto"], required=True)
     parser.add_argument("--distance-m", type=float)
     parser.add_argument("--acc-unit", choices=["g", "mps2"], default="g")
@@ -157,6 +157,8 @@ def _add_analysis_options(parser: argparse.ArgumentParser, include_method: bool)
     parser.add_argument("--kalman-process-noise", type=float, default=0.05)
     parser.add_argument("--kalman-measurement-noise", type=float, default=0.5)
     parser.add_argument("--course-yaw-deg", type=float, default=0.0)
+    parser.add_argument("--heading-source", choices=["auto", "yaw", "quaternion", "magnetometer"], default="auto")
+    parser.add_argument("--heading-offset-deg", type=float, default=0.0)
     parser.add_argument("--euler-order", default="xyz")
     parser.add_argument("--gravity", type=float, default=9.80665)
     parser.add_argument("--gravity-mode", choices=["auto", "subtract-world-z", "baseline"], default="auto")
@@ -197,6 +199,8 @@ def _run_config_from_args(args: argparse.Namespace, method: str | None = None) -
         kalman_process_noise=args.kalman_process_noise,
         kalman_measurement_noise=args.kalman_measurement_noise,
         course_yaw_deg=args.course_yaw_deg,
+        heading_source=args.heading_source,
+        heading_offset_deg=args.heading_offset_deg,
         euler_order=args.euler_order,
         gravity=args.gravity,
         gravity_mode=args.gravity_mode,

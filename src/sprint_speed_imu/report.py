@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 
 from .config import RunConfig
-from .plotting import plot_speed_curve
+from .plotting import plot_speed_curve, plot_trajectory
 
 
 ASSUMPTIONS = [
@@ -44,6 +44,7 @@ def write_artifacts(
     debug_df: pd.DataFrame | None,
     summary: dict[str, Any],
     warnings: list[str],
+    trajectory: pd.DataFrame | None = None,
 ) -> None:
     config.output_dir.mkdir(parents=True, exist_ok=True)
     curve.to_csv(config.output_dir / "speed_curve.csv", index=False)
@@ -53,3 +54,6 @@ def write_artifacts(
     if debug_df is not None:
         debug_df.to_csv(config.output_dir / "debug_intermediate.csv", index=False)
     plot_speed_curve(curve, summary, config.output_dir / "speed_curve.png")
+    if trajectory is not None:
+        trajectory.to_csv(config.output_dir / "trajectory.csv", index=False)
+        plot_trajectory(trajectory, summary, config.output_dir / "trajectory.png")

@@ -33,6 +33,11 @@ def build_qc(
         "negative_speed_ratio": negative_speed_ratio,
         "pca_explained_variance_ratio": diagnostics.get("pca_explained_variance_ratio"),
         "yaw_std_deg": diagnostics.get("yaw_std_deg"),
+        "heading_source": diagnostics.get("heading_source"),
+        "heading_range_deg": diagnostics.get("heading_range_deg"),
+        "heading_rate_p95_deg_s": diagnostics.get("heading_rate_p95_deg_s"),
+        "heading_lateral_energy_ratio": diagnostics.get("heading_lateral_energy_ratio"),
+        "magnetic_norm_cv": diagnostics.get("magnetic_norm_cv"),
         "manual_distance_correction_ratio": velocity_diagnostics.get("manual_distance_correction_ratio"),
         "acceleration_saturation_warning": acceleration_saturation_warning(df, config.gravity),
         "baseline_gravity_norm_mps2": diagnostics.get("baseline_gravity_norm_mps2"),
@@ -69,6 +74,13 @@ def confidence_labels(config: RunConfig, diagnostics: dict[str, object], warning
     if config.method == "attitude":
         yaw_std = diagnostics.get("yaw_std_deg")
         if isinstance(yaw_std, float) and yaw_std > 30.0:
+            shape = "low"
+    if config.method == "heading":
+        lateral_ratio = diagnostics.get("heading_lateral_energy_ratio")
+        magnetic_cv = diagnostics.get("magnetic_norm_cv")
+        if isinstance(lateral_ratio, float) and lateral_ratio > 1.0:
+            shape = "low"
+        if isinstance(magnetic_cv, float) and magnetic_cv > 0.20:
             shape = "low"
 
     overall = "medium" if shape != "low" else "low"

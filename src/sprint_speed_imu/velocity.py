@@ -70,7 +70,16 @@ def estimate_velocity(
     v_raw = cumulative_trapezoid(a_smoothed, time_s)
 
     if config.distance_source == "auto":
-        v_est = v_raw - float(np.nanmin(v_raw))
+        if config.method == "heading" and len(v_raw) >= 2:
+            drift = float(v_raw[-1] - v_raw[0])
+            v_shape = v_raw - np.linspace(float(v_raw[0]), float(v_raw[-1]), len(v_raw))
+            v_est = v_shape - float(np.nanmin(v_shape))
+            warnings.append(
+                "Heading auto velocity removed linear integration drift without distance or stride constraints."
+            )
+        else:
+            drift = None
+            v_est = v_raw - float(np.nanmin(v_raw))
         v_est = _smooth_post_integration(v_est, time_s, config)
         v_est = np.maximum(v_est, 0.0)
         x_est = cumulative_trapezoid(v_est, time_s)
@@ -86,6 +95,7 @@ def estimate_velocity(
                 "raw_distance_m": float(x_est[-1]) if len(x_est) else None,
                 "manual_distance_correction_ratio": None,
                 "forward_accel_peak_retention_ratio": peak_retention_ratio,
+                "auto_velocity_drift_removed_mps": drift,
             },
             warnings=warnings,
         )

@@ -12,7 +12,7 @@ import pandas as pd
 
 from .config import RunConfig
 from .errors import InputFormatError
-from .schema import ACC_COLUMNS, GYRO_COLUMNS, STANDARD_COLUMNS
+from .schema import ACC_COLUMNS, GYRO_COLUMNS, MAG_COLUMNS, STANDARD_COLUMNS
 
 COMMON_ALIASES: dict[str, tuple[str, ...]] = {
     "time_s": ("time", "time(s)", "times", "timestamp", "seconds", "sec"),
@@ -29,6 +29,9 @@ COMMON_ALIASES: dict[str, tuple[str, ...]] = {
     "qx": ("quatx", "q1", "quaternionx"),
     "qy": ("quaty", "q2", "quaterniony"),
     "qz": ("quatz", "q3", "quaternionz"),
+    "hx": ("magx", "mag_x", "magneticx", "mx", "h_x"),
+    "hy": ("magy", "mag_y", "magneticy", "my", "h_y"),
+    "hz": ("magz", "mag_z", "magneticz", "mz", "h_z"),
 }
 
 
@@ -111,7 +114,7 @@ def read_imu_csv(config: RunConfig) -> tuple[pd.DataFrame, dict[str, Any], list[
     df["time_s"], time_warnings = _normalize_time_column(df["time_s"])
     warnings.extend(time_warnings)
 
-    for column in [*ACC_COLUMNS, *GYRO_COLUMNS, "roll", "pitch", "yaw", "qw", "qx", "qy", "qz"]:
+    for column in [*ACC_COLUMNS, *GYRO_COLUMNS, *MAG_COLUMNS, "roll", "pitch", "yaw", "qw", "qx", "qy", "qz"]:
         if column in df.columns:
             df[column] = pd.to_numeric(df[column], errors="coerce")
 

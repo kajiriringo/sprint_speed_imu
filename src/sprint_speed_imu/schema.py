@@ -24,12 +24,16 @@ STANDARD_COLUMNS = [
     "qx",
     "qy",
     "qz",
+    "hx",
+    "hy",
+    "hz",
 ]
 
 ACC_COLUMNS = ["ax", "ay", "az"]
 GYRO_COLUMNS = ["gx", "gy", "gz"]
 EULER_COLUMNS = ["roll", "pitch", "yaw"]
 QUATERNION_COLUMNS = ["qw", "qx", "qy", "qz"]
+MAG_COLUMNS = ["hx", "hy", "hz"]
 
 
 def missing_columns(df: pd.DataFrame, columns: Iterable[str]) -> list[str]:
@@ -61,6 +65,15 @@ def valid_euler_columns(df: pd.DataFrame) -> bool:
     return not missing_columns(df, EULER_COLUMNS) and not finite_invalid_columns(df, EULER_COLUMNS)
 
 
+def valid_magnetometer_columns(df: pd.DataFrame) -> bool:
+    if missing_columns(df, MAG_COLUMNS):
+        return False
+    if finite_invalid_columns(df, MAG_COLUMNS):
+        return False
+    mag = df[MAG_COLUMNS].to_numpy(dtype=float)
+    return bool(np.all(np.linalg.norm(mag, axis=1) > 1e-9))
+
+
 def validate_required_columns(df: pd.DataFrame, method: str) -> None:
     base_missing = missing_columns(df, ["time_s", *ACC_COLUMNS])
     if base_missing:
@@ -87,6 +100,14 @@ def validate_required_columns(df: pd.DataFrame, method: str) -> None:
         if not (valid_euler_columns(df) or valid_quaternion_columns(df)):
             raise InputFormatError(
                 "method=attitude requires finite roll,pitch,yaw or valid non-zero quaternion values."
+            )
+        return
+
+    if method == "heading":
+        has_yaw = "yaw" in df.columns and not finite_invalid_columns(df, ["yaw"])
+        if not (has_yaw or valid_quaternion_columns(df) or valid_magnetometer_columns(df)):
+            raise MissingColumnError(
+                "method=heading requires yaw, valid quaternion columns, or hx,hy,hz magnetometer columns."
             )
         return
 

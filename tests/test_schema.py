@@ -51,3 +51,24 @@ def test_attitude_rejects_invalid_orientation_values():
     )
     with pytest.raises(InputFormatError):
         validate_required_columns(df, "attitude")
+
+
+def test_heading_requires_heading_source():
+    df = pd.DataFrame({"time_s": [0.0], "ax": [0.0], "ay": [0.0], "az": [9.8]})
+    with pytest.raises(MissingColumnError):
+        validate_required_columns(df, "heading")
+
+
+def test_heading_accepts_magnetometer_columns():
+    df = pd.DataFrame(
+        {
+            "time_s": [0.0, 0.1],
+            "ax": [0.0, 0.0],
+            "ay": [0.0, 0.0],
+            "az": [9.8, 9.8],
+            "hx": [30.0, 30.0],
+            "hy": [2.0, 2.0],
+            "hz": [5.0, 5.0],
+        }
+    )
+    validate_required_columns(df, "heading")

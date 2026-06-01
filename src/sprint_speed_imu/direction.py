@@ -1,4 +1,4 @@
-"""Direction extraction for attitude and PCA methods."""
+"""Direction extraction for attitude, heading, and PCA methods."""
 
 from __future__ import annotations
 
@@ -6,10 +6,13 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from scipy.spatial.transform import Rotation
 
 from .config import RunConfig
 from .errors import ProcessingError
 from .orientation import course_vectors, rotation_from_dataframe
+from .preprocess import smooth_signal
+from .schema import MAG_COLUMNS, valid_euler_columns, valid_magnetometer_columns, valid_quaternion_columns
 
 
 @dataclass(slots=True)
@@ -23,6 +26,7 @@ class DirectionResult:
     warnings: list[str]
     method_specific_1: np.ndarray
     method_specific_2: np.ndarray
+    heading_deg: np.ndarray | None = None
 
 
 def compute_direction(
@@ -34,6 +38,8 @@ def compute_direction(
 ) -> DirectionResult:
     if config.method == "attitude":
         return _compute_attitude(full_df, run_df, config, start_time)
+    if config.method == "heading":
+        return _compute_heading(full_df, run_df, config, start_time)
     if config.method == "pca":
         return _compute_pca(full_df, run_df, config, start_time, end_time)
     raise ProcessingError(f"Unknown method: {config.method}")
@@ -95,6 +101,232 @@ def _compute_attitude(
         method_specific_1=method_specific_1,
         method_specific_2=method_specific_2,
     )
+
+
+def _compute_heading(
+    full_df: pd.DataFrame,
+    run_df: pd.DataFrame,
+    config: RunConfig,
+    start_time: float,
+) -> DirectionResult:
+    warnings: list[str] = []
+    acc_sensor = np.array(run_df[["ax", "ay", "az"]], dtype=float, copy=True)
+    rotation = None
+    rotation_source: str | None = None
+    if valid_quaternion_columns(run_df) or valid_euler_columns(run_df):
+        rotation, rotation_source, orientation_warnings = rotation_from_dataframe(run_df, config)
+        warnings.extend(orientation_warnings)
+    else:
+        warnings.append(
+            "Heading method did not find trusted orientation columns; it may estimate tilt from acceleration."
+        )
+
+    heading_deg, heading_source, heading_aux, heading_warnings = _select_heading(run_df, config, rotation)
+    warnings.extend(heading_warnings)
+    if rotation is None and heading_source == "magnetometer":
+        rotation = _rotation_from_acc_tilt_and_heading(run_df, heading_deg)
+        rotation_source = "accelerometer_magnetometer_tilt"
+    acc_world = rotation.apply(acc_sensor) if rotation is not None else acc_sensor.copy()
+    linear_world = acc_world - _gravity_vector_for_heading(full_df, run_df, config, start_time, rotation)
+    heading_rad = np.deg2rad(heading_deg)
+    forward_vectors = np.column_stack([np.cos(heading_rad), np.sin(heading_rad), np.zeros(len(run_df))])
+    lateral_vectors = np.column_stack([-np.sin(heading_rad), np.cos(heading_rad), np.zeros(len(run_df))])
+
+    a_forward = np.sum(linear_world * forward_vectors, axis=1)
+    a_lateral = np.sum(linear_world * lateral_vectors, axis=1)
+    a_vertical = linear_world[:, 2]
+    a_norm = np.linalg.norm(linear_world, axis=1)
+
+    heading_unwrapped = _unwrap_degrees(heading_deg)
+    heading_range_deg = float(np.nanmax(heading_unwrapped) - np.nanmin(heading_unwrapped))
+    heading_rate_p95 = _heading_rate_p95_deg_s(run_df["time_s"].to_numpy(dtype=float), heading_unwrapped)
+    lateral_energy_ratio = _energy_ratio(a_lateral, a_forward)
+    if lateral_energy_ratio is not None and lateral_energy_ratio > 1.0:
+        warnings.append(
+            "Lateral acceleration energy exceeds forward-heading energy; heading may not match movement direction."
+        )
+
+    mag_norm_cv = _magnetic_norm_cv(run_df)
+    if mag_norm_cv is not None and mag_norm_cv > 0.20:
+        warnings.append("Magnetometer norm varies strongly; heading may be affected by magnetic disturbance.")
+
+    if heading_source == "magnetometer":
+        warnings.append(
+            "Raw magnetometer heading is tilt-compensated from acceleration and remains low confidence during motion."
+        )
+    warnings.append(
+        "Heading method integrates acceleration without stride length or manual distance; absolute speed can drift."
+    )
+
+    diagnostics: dict[str, object] = {
+        "heading_source": heading_source,
+        "rotation_source": rotation_source,
+        "heading_offset_deg": config.heading_offset_deg,
+        "heading_range_deg": heading_range_deg,
+        "heading_rate_p95_deg_s": heading_rate_p95,
+        "heading_lateral_energy_ratio": lateral_energy_ratio,
+        "magnetic_norm_cv": mag_norm_cv,
+        **heading_aux,
+    }
+    method_specific_2 = (
+        _magnetic_norm(run_df) if valid_magnetometer_columns(run_df) else np.full(len(run_df), np.nan)
+    )
+    return DirectionResult(
+        run_df=run_df,
+        a_forward_mps2=a_forward,
+        a_lateral_mps2=a_lateral,
+        a_vertical_mps2=a_vertical,
+        a_norm_mps2=a_norm,
+        diagnostics=diagnostics,
+        warnings=warnings,
+        method_specific_1=heading_deg,
+        method_specific_2=method_specific_2,
+        heading_deg=heading_deg,
+    )
+
+
+def _gravity_vector_for_heading(
+    full_df: pd.DataFrame,
+    run_df: pd.DataFrame,
+    config: RunConfig,
+    start_time: float,
+    rotation,
+) -> np.ndarray:
+    if rotation is not None:
+        return np.array([0.0, 0.0, config.gravity])
+
+    time = full_df["time_s"].to_numpy(dtype=float)
+    baseline_mask = (time >= start_time - 1.0) & (time < start_time)
+    if int(np.sum(baseline_mask)) < 3:
+        baseline_mask = time <= time[0] + 1.0
+    if int(np.sum(baseline_mask)) < 3:
+        baseline_mask = np.arange(len(time)) < min(len(time), 10)
+    return np.nanmedian(full_df.loc[baseline_mask, ["ax", "ay", "az"]].to_numpy(dtype=float), axis=0)
+
+
+def _select_heading(
+    run_df: pd.DataFrame,
+    config: RunConfig,
+    rotation,
+) -> tuple[np.ndarray, str, dict[str, object], list[str]]:
+    source = config.heading_source
+    if source not in {"auto", "yaw", "quaternion", "magnetometer"}:
+        raise ProcessingError("--heading-source must be auto, yaw, quaternion, or magnetometer.")
+
+    warnings: list[str] = []
+    aux: dict[str, object] = {}
+
+    if source in {"auto", "yaw"} and "yaw" in run_df.columns:
+        yaw = run_df["yaw"].to_numpy(dtype=float)
+        if np.all(np.isfinite(yaw)):
+            heading = yaw if config.angle_unit == "deg" else np.rad2deg(yaw)
+            heading = _heading_with_offset(heading, config.heading_offset_deg)
+            return heading, "yaw", aux, warnings
+        if source == "yaw":
+            raise ProcessingError("--heading-source=yaw requires finite yaw values.")
+
+    if source in {"auto", "quaternion"} and rotation is not None:
+        forward_axis = rotation.apply(np.tile(np.array([1.0, 0.0, 0.0]), (len(run_df), 1)))
+        heading = np.rad2deg(np.arctan2(forward_axis[:, 1], forward_axis[:, 0]))
+        heading = _heading_with_offset(heading, config.heading_offset_deg)
+        return heading, "quaternion_forward_axis", aux, warnings
+    if source == "quaternion":
+        raise ProcessingError("--heading-source=quaternion requires valid quaternion or Euler orientation.")
+
+    if source in {"auto", "magnetometer"} and valid_magnetometer_columns(run_df):
+        heading = _tilt_compensated_magnetic_heading(run_df)
+        heading = _heading_with_offset(heading, config.heading_offset_deg)
+        aux["magnetometer_heading_note"] = "tilt_compensated_from_acceleration"
+        return heading, "magnetometer", aux, warnings
+    if source == "magnetometer":
+        raise ProcessingError("--heading-source=magnetometer requires finite hx,hy,hz columns.")
+
+    raise ProcessingError("method=heading could not resolve a heading source.")
+
+
+def _heading_with_offset(heading_deg: np.ndarray, offset_deg: float) -> np.ndarray:
+    return _wrap_degrees(np.asarray(heading_deg, dtype=float) + float(offset_deg))
+
+
+def _tilt_compensated_magnetic_heading(run_df: pd.DataFrame) -> np.ndarray:
+    mag = run_df[MAG_COLUMNS].to_numpy(dtype=float)
+    roll, pitch = _tilt_from_acceleration(run_df)
+
+    mx, my, mz = mag[:, 0], mag[:, 1], mag[:, 2]
+    xh = mx * np.cos(pitch) + my * np.sin(roll) * np.sin(pitch) + mz * np.cos(roll) * np.sin(pitch)
+    yh = my * np.cos(roll) - mz * np.sin(roll)
+    return np.rad2deg(np.arctan2(-yh, xh))
+
+
+def _rotation_from_acc_tilt_and_heading(run_df: pd.DataFrame, heading_deg: np.ndarray) -> Rotation:
+    roll, pitch = _tilt_from_acceleration(run_df)
+    return Rotation.from_euler(
+        "xyz",
+        np.column_stack([roll, pitch, np.deg2rad(heading_deg)]),
+        degrees=False,
+    )
+
+
+def _tilt_from_acceleration(run_df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    acc = run_df[["ax", "ay", "az"]].to_numpy(dtype=float)
+    time = run_df["time_s"].to_numpy(dtype=float)
+    acc_lp = np.column_stack(
+        [
+            smooth_signal(
+                acc[:, idx],
+                time,
+                enabled=True,
+                method="kalman",
+                kalman_process_noise=0.01,
+                kalman_measurement_noise=1.0,
+            )
+            for idx in range(3)
+        ]
+    )
+    ax, ay, az = acc_lp[:, 0], acc_lp[:, 1], acc_lp[:, 2]
+    roll = np.arctan2(ay, az)
+    pitch = np.arctan2(-ax, ay * np.sin(roll) + az * np.cos(roll))
+    return roll, pitch
+
+
+def _wrap_degrees(values: np.ndarray) -> np.ndarray:
+    return (np.asarray(values, dtype=float) + 180.0) % 360.0 - 180.0
+
+
+def _unwrap_degrees(values: np.ndarray) -> np.ndarray:
+    return np.rad2deg(np.unwrap(np.deg2rad(np.asarray(values, dtype=float))))
+
+
+def _heading_rate_p95_deg_s(time: np.ndarray, heading_unwrapped_deg: np.ndarray) -> float | None:
+    if len(time) < 2:
+        return None
+    dt = np.diff(time)
+    valid = dt > 1e-9
+    if not np.any(valid):
+        return None
+    rate = np.abs(np.diff(heading_unwrapped_deg)[valid] / dt[valid])
+    return float(np.nanpercentile(rate, 95)) if len(rate) else None
+
+
+def _energy_ratio(numerator: np.ndarray, denominator: np.ndarray) -> float | None:
+    den = float(np.nansum(np.asarray(denominator, dtype=float) ** 2))
+    if den <= 1e-12:
+        return None
+    return float(np.nansum(np.asarray(numerator, dtype=float) ** 2) / den)
+
+
+def _magnetic_norm(run_df: pd.DataFrame) -> np.ndarray:
+    return np.linalg.norm(run_df[MAG_COLUMNS].to_numpy(dtype=float), axis=1)
+
+
+def _magnetic_norm_cv(run_df: pd.DataFrame) -> float | None:
+    if not valid_magnetometer_columns(run_df):
+        return None
+    norm = _magnetic_norm(run_df)
+    med = float(np.nanmedian(norm))
+    if med <= 1e-9:
+        return None
+    return float(np.nanstd(norm) / med)
 
 
 def _attitude_static_residual(

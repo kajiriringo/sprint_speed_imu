@@ -1,0 +1,12 @@
+{
+  "time_s": "Time",
+  "ax": "AccX",
+  "ay": "AccY",
+  "az": "AccZ",
+  "gx": "GyroX",
+  "gy": "GyroY",
+  "gz": "GyroZ",
+  "roll": "AngleX",
+  "pitch": "AngleY",
+  "yaw": "AngleZ"
+}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -18,9 +19,9 @@ COMMON_ALIASES: dict[str, tuple[str, ...]] = {
     "ax": ("accx", "acc_x", "accelerationx", "ax(g)", "xacc", "accelx"),
     "ay": ("accy", "acc_y", "accelerationy", "ay(g)", "yacc", "accely"),
     "az": ("accz", "acc_z", "accelerationz", "az(g)", "zacc", "accelz"),
-    "gx": ("gyrox", "gyro_x", "angularvelocityx", "wx", "gx(dps)"),
-    "gy": ("gyroy", "gyro_y", "angularvelocityy", "wy", "gy(dps)"),
-    "gz": ("gyroz", "gyro_z", "angularvelocityz", "wz", "gz(dps)"),
+    "gx": ("gyrox", "gyro_x", "angularvelocityx", "wx", "gx(dps)", "asx"),
+    "gy": ("gyroy", "gyro_y", "angularvelocityy", "wy", "gy(dps)", "asy"),
+    "gz": ("gyroz", "gyro_z", "angularvelocityz", "wz", "gz(dps)", "asz"),
     "roll": ("anglex", "angle_x", "roll(deg)", "eulerx"),
     "pitch": ("angley", "angle_y", "pitch(deg)", "eulery"),
     "yaw": ("anglez", "angle_z", "yaw(deg)", "eulerz"),
@@ -32,15 +33,8 @@ COMMON_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 def _canonical(value: str) -> str:
-    return (
-        value.strip()
-        .lower()
-        .replace(" ", "")
-        .replace("-", "")
-        .replace("_", "")
-        .replace("[", "(")
-        .replace("]", ")")
-    )
+    value = re.sub(r"\([^)]*\)", "", value.strip().lower())
+    return re.sub(r"[^a-z0-9]+", "", value)
 
 
 def _read_column_map(path: Path | None) -> dict[str, str]:
@@ -87,7 +81,7 @@ def _build_rename_map(columns: list[str], config: RunConfig) -> dict[str, str]:
 def read_imu_csv(config: RunConfig) -> tuple[pd.DataFrame, dict[str, Any], list[str]]:
     warnings: list[str] = []
     try:
-        raw = pd.read_csv(config.input_path)
+        raw = pd.read_csv(config.input_path, sep=None, engine="python")
     except OSError as exc:
         raise InputFormatError(f"Failed to read input CSV: {config.input_path}") from exc
     except pd.errors.ParserError as exc:
@@ -114,7 +108,10 @@ def read_imu_csv(config: RunConfig) -> tuple[pd.DataFrame, dict[str, Any], list[
         df["time_s"] = np.arange(len(df), dtype=float) / config.sample_rate_hz
         warnings.append("time_s was generated from --sample-rate-hz.")
 
-    for column in [*ACC_COLUMNS, *GYRO_COLUMNS, "roll", "pitch", "yaw", "qw", "qx", "qy", "qz", "time_s"]:
+    df["time_s"], time_warnings = _normalize_time_column(df["time_s"])
+    warnings.extend(time_warnings)
+
+    for column in [*ACC_COLUMNS, *GYRO_COLUMNS, "roll", "pitch", "yaw", "qw", "qx", "qy", "qz"]:
         if column in df.columns:
             df[column] = pd.to_numeric(df[column], errors="coerce")
 
@@ -138,3 +135,17 @@ def read_imu_csv(config: RunConfig) -> tuple[pd.DataFrame, dict[str, Any], list[
 
     df.attrs["missing_ratio"] = missing_ratio
     return df, input_meta, warnings
+
+
+def _normalize_time_column(series: pd.Series) -> tuple[pd.Series, list[str]]:
+    numeric = pd.to_numeric(series, errors="coerce")
+    if numeric.notna().any():
+        return numeric.astype(float), []
+
+    timestamps = pd.to_datetime(series, errors="coerce")
+    if timestamps.notna().all():
+        start = timestamps.iloc[0]
+        seconds = (timestamps - start).dt.total_seconds().astype(float)
+        return seconds, ["time_s was generated from datetime timestamps in the time column."]
+
+    return numeric.astype(float), []

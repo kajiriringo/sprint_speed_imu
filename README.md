@@ -155,6 +155,8 @@ time_s,ax,ay,az,gx,gy,gz,roll,pitch,yaw,qw,qx,qy,qz
 | `attitude` | `time_s`, `ax`, `ay`, `az` と `roll,pitch,yaw` または `qw,qx,qy,qz` |
 
 `time_s` が無い場合は `--sample-rate-hz` から時刻列を生成できます。
+カンマ区切り CSV とタブ区切り TSV は自動判定されます。
+`time` 列が ISO 日時の場合は、先頭行からの経過秒に変換されます。
 
 ```bash
 sprint-speed-imu \
@@ -179,6 +181,8 @@ sprint-speed-imu \
 ### 列名マッピング
 
 WitMotion など、CSV の列名が標準列と異なる場合は `--column-map` を使います。
+WT901BLE 形式の `AccX(g)`, `AsX(°/s)`, `AngleX(°)`, `Q0()` などの単位付き列名は、
+追加マッピングなしで読み込めます。
 
 例:
 
